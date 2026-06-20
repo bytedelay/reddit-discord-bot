@@ -4,7 +4,7 @@
 
 ## 🎯 Overview
 
-** This bot is prepared for fetching reddit posts from subreddits where in the bot posts the messages at an interval throughout the day **
+**This bot is prepared for fetching reddit posts from subreddits where in the bot posts the messages at an interval throughout the day**
 
 
 ## 🗺️ Roadmap
