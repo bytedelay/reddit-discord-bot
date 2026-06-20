@@ -16,6 +16,9 @@
 - [X] Checked Connection and sort out issues.
 - [X] Checked reddit posts retrieval 
 - [X] Added readme.md
+- [X] Integrate Discord bot with the current version
+- [X] Switch from RSS to official API
+- [X] Test offline performance
 
 ### InProgress
 
@@ -23,11 +26,9 @@
 
 ### Future Plan
 
-- [ ] Integrate Discord bot with the current version
-- [ ] Switch from RSS to official API
+
 - [ ] Provide options to collect various format of media
 - [ ] Docker Integration
-- [ ] Test offline performance
 - [ ] Test portability
 - [ ] Remove test files
 - [ ] Make readme.md fancier. ;_;
