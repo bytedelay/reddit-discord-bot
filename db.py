@@ -74,16 +74,29 @@ def mark_as_posted(
                     reddit_post_id,
                     title,
                     reddit_url,
-                    subreddit_name
+                    subreddit_name,
+                    status,
+                    skip_reason
                 )
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (reddit_post_id) DO NOTHING;
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (reddit_post_id)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    skip_reason = EXCLUDED.skip_reason;
                 """,
-                (post_id, title, reddit_url, subreddit_name),
+                (
+                    post_id,
+                    title,
+                    reddit_url,
+                    subreddit_name,
+                    "posted",
+                    None,
+                ),
             )
 
     print(f"Marked post as posted: {post_id}")
 
+    
 def add_subreddit_config(subreddit_name: str, discord_channel_id: str) -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
@@ -119,3 +132,59 @@ def get_active_subreddit_configs():
             )
 
             return cursor.fetchall()
+        
+def has_been_processed(post_id: str) -> bool:
+    """
+    Returns True if the Reddit post was either posted or intentionally skipped.
+    This prevents the bot from repeatedly checking the same text-only/no-media posts.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM posted_posts
+                WHERE reddit_post_id = %s;
+                """,
+                (post_id,),
+            )
+
+            return cursor.fetchone() is not None
+
+
+def mark_as_skipped(
+    post_id: str,
+    title: str,
+    reddit_url: str,
+    subreddit_name: str,
+    reason: str,
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO posted_posts (
+                    reddit_post_id,
+                    title,
+                    reddit_url,
+                    subreddit_name,
+                    status,
+                    skip_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (reddit_post_id)
+                DO UPDATE SET
+                    status = EXCLUDED.status,
+                    skip_reason = EXCLUDED.skip_reason;
+                """,
+                (
+                    post_id,
+                    title,
+                    reddit_url,
+                    subreddit_name,
+                    "skipped",
+                    reason,
+                ),
+            )
+
+    print(f"Marked post as skipped: {post_id} | Reason: {reason}")

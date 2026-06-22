@@ -6,8 +6,10 @@ from dotenv import load_dotenv
 
 from db import (
     init_db,
+    has_been_processed,
     has_been_posted,
     mark_as_posted,
+     mark_as_skipped,
     get_active_subreddit_configs,
 )
 from reddit_fetcher import fetch_latest_posts
@@ -92,10 +94,22 @@ async def send_reddit_post_to_discord(channel, post: dict):
         await channel.send(embeds=embeds)
 
     else:
+        media_hint = post.get("media_hint", "unknown")
+        has_media_candidate = post.get("has_media_candidate", False)
+
+        if has_media_candidate:
+            description = (
+                f"New post from r/{subreddit}\n\n"
+                f"Media detected, but RSS did not expose direct image URLs.\n"
+                f"Open the Reddit post to view the full carousel/gallery."
+            )
+        else:
+            description = f"New post from r/{subreddit}"
+
         embed = discord.Embed(
             title=title,
             url=url,
-            description=f"New post from r/{subreddit}",
+            description=description,
         )
 
         embed.add_field(
@@ -111,12 +125,19 @@ async def send_reddit_post_to_discord(channel, post: dict):
         )
 
         embed.add_field(
+            name="Media Hint",
+            value=media_hint,
+            inline=True,
+        )
+
+        embed.add_field(
             name="Post ID",
             value=post_id,
             inline=True,
         )
 
         await channel.send(embed=embed)
+
 
     # Send direct video links separately if the RSS extractor found any.
     # Discord usually previews direct .mp4/.webm/.gif links better as normal messages.
@@ -208,17 +229,33 @@ async def check_reddit_posts():
                 image_urls = post.get("image_urls", [])
                 video_urls = post.get("video_urls", [])
 
-                if has_been_posted(post_id):
-                    print(f"Repeat found, skipping: {title}")
+                if has_been_processed(post_id):
+                    print(f"Already processed, skipping: {title}")
                     continue
+                has_media_candidate = post.get("has_media_candidate", False)
+                media_hint = post.get("media_hint", "unknown")
 
+                if not image_urls and not video_urls and not has_media_candidate:
+                    print(f"No media found, soft skipping: {title}")
+                    continue
+                
+                '''
                 if not image_urls and not video_urls:
-                    print(f"Text-only post skipped: {title}")
-                    continue
+                    print(f"No media found, permanently skipping: {title}")
 
+                    mark_as_skipped(
+                        post_id=post_id,
+                        title=title,
+                        reddit_url=url,
+                        subreddit_name=subreddit,
+                        reason="no_media_found",
+                    )
+
+                    continue
+                '''
                 await send_reddit_post_to_discord(
-                channel=channel,
-                post=post,
+                    channel=channel,
+                    post=post,
                 )
 
                 mark_as_posted(

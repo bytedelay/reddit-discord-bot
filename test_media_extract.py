@@ -2,19 +2,22 @@ from reddit_fetcher import fetch_latest_posts
 
 
 posts = fetch_latest_posts(
-    subreddit_name="PORNism",
+    subreddit_name="wallpapers",
     feed_mode="hot",
-    limit=5,
+    limit=10,
 )
 
 for post in posts:
-    print("-" * 80)
+    print("-" * 90)
     print("Title:", post["title"])
     print("URL:", post["url"])
     print("Images found:", len(post["image_urls"]))
+    print("Videos found:", len(post["video_urls"]))
+    print("Has media candidate:", post.get("has_media_candidate"))
+    print("Media hint:", post.get("media_hint"))
+
     for image_url in post["image_urls"]:
         print("  IMG:", image_url)
 
-    print("Videos found:", len(post["video_urls"]))
     for video_url in post["video_urls"]:
         print("  VID:", video_url)

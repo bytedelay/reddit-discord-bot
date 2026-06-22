@@ -1,5 +1,6 @@
 import html
 import time
+from urllib.parse import urlparse
 from typing import Dict, List
 
 import feedparser
@@ -11,6 +12,22 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov")
 
 
+IMAGE_HOSTS = (
+    "i.redd.it",
+    "preview.redd.it",
+    "external-preview.redd.it",
+    "i.imgur.com",
+    "imgur.com",
+    "redditmedia.com",
+)
+
+VIDEO_HOSTS = (
+    "v.redd.it",
+    "redgifs.com",
+    "gfycat.com",
+)
+
+
 def clean_url(url: str) -> str:
     return html.unescape(url).replace("&amp;", "&")
 
@@ -19,12 +36,41 @@ def url_without_query(url: str) -> str:
     return url.split("?")[0].lower()
 
 
+def get_hostname(url: str) -> str:
+    try:
+        return urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+
 def is_direct_image_url(url: str) -> bool:
-    return url_without_query(url).endswith(IMAGE_EXTENSIONS)
+    cleaned = clean_url(url)
+    lower_url = cleaned.lower()
+    host = get_hostname(cleaned)
+
+    if url_without_query(cleaned).endswith(IMAGE_EXTENSIONS):
+        return True
+
+    if any(image_host in host for image_host in IMAGE_HOSTS):
+        return True
+
+    if "format=jpg" in lower_url or "format=png" in lower_url or "format=webp" in lower_url:
+        return True
+
+    return False
 
 
-def is_direct_video_url(url: str) -> bool:
-    return url_without_query(url).endswith(VIDEO_EXTENSIONS)
+def is_video_url(url: str) -> bool:
+    cleaned = clean_url(url)
+    host = get_hostname(cleaned)
+
+    if url_without_query(cleaned).endswith(VIDEO_EXTENSIONS):
+        return True
+
+    if any(video_host in host for video_host in VIDEO_HOSTS):
+        return True
+
+    return False
 
 
 def dedupe_urls(urls: List[str]) -> List[str]:
@@ -44,13 +90,27 @@ def dedupe_urls(urls: List[str]) -> List[str]:
     return unique_urls
 
 
-def extract_media_urls(entry) -> Dict[str, List[str]]:
-    """
-    Extract as many media URLs as possible from Reddit RSS.
-    This works for images/GIFs that Reddit exposes in the RSS summary.
-    It may not expose every gallery image or Reddit video.
-    """
+def get_html_blocks(entry) -> List[str]:
+    html_blocks = []
 
+    summary = entry.get("summary", "")
+    description = entry.get("description", "")
+
+    if summary:
+        html_blocks.append(summary)
+
+    if description:
+        html_blocks.append(description)
+
+    for content_item in entry.get("content", []):
+        value = content_item.get("value", "")
+        if value:
+            html_blocks.append(value)
+
+    return html_blocks
+
+
+def extract_media_urls(entry) -> Dict[str, List[str]]:
     image_urls = []
     video_urls = []
 
@@ -65,22 +125,32 @@ def extract_media_urls(entry) -> Dict[str, List[str]]:
     if hasattr(entry, "media_content"):
         for media_item in entry.media_content:
             url = media_item.get("url")
-            if url:
-                if is_direct_video_url(url):
-                    video_urls.append(url)
-                else:
-                    image_urls.append(url)
+            if not url:
+                continue
 
-    # 3. Parse summary HTML and collect ALL images/links
-    summary_html = entry.get("summary", "")
+            if is_video_url(url):
+                video_urls.append(url)
+            elif is_direct_image_url(url):
+                image_urls.append(url)
 
-    if summary_html:
-        soup = BeautifulSoup(summary_html, "html.parser")
+    # 3. Parse summary/content HTML for images and media links
+    for html_block in get_html_blocks(entry):
+        soup = BeautifulSoup(html_block, "html.parser")
 
         for img in soup.find_all("img"):
             src = img.get("src")
-            if src:
+            if src and is_direct_image_url(src):
                 image_urls.append(src)
+
+        for source in soup.find_all("source"):
+            src = source.get("src")
+            if src and is_video_url(src):
+                video_urls.append(src)
+
+        for video in soup.find_all("video"):
+            src = video.get("src")
+            if src and is_video_url(src):
+                video_urls.append(src)
 
         for link in soup.find_all("a"):
             href = link.get("href")
@@ -90,7 +160,7 @@ def extract_media_urls(entry) -> Dict[str, List[str]]:
             if is_direct_image_url(href):
                 image_urls.append(href)
 
-            if is_direct_video_url(href):
+            elif is_video_url(href):
                 video_urls.append(href)
 
     # 4. Feed links/enclosures
@@ -100,7 +170,7 @@ def extract_media_urls(entry) -> Dict[str, List[str]]:
         if is_direct_image_url(href):
             image_urls.append(href)
 
-        if is_direct_video_url(href):
+        elif is_video_url(href):
             video_urls.append(href)
 
     return {
@@ -113,8 +183,6 @@ def build_feed_url(subreddit_name: str, feed_mode: str) -> str:
     feed_mode = feed_mode.lower().strip()
 
     if feed_mode == "old":
-        # Reddit RSS has no true /old sort.
-        # We simulate older posts by reversing the /new batch.
         return f"https://www.reddit.com/r/{subreddit_name}/new/.rss"
 
     if feed_mode in ["new", "hot", "top", "rising"]:
@@ -167,6 +235,39 @@ def fetch_rss_with_retry(
     print(f"Failed to fetch r/{subreddit_name} [{feed_mode}] after retries.")
     return None
 
+def detect_media_candidate(entry) -> tuple[bool, str]:
+    """
+    RSS may not expose full carousel/gallery data.
+    This function detects posts that likely contain media even when
+    we cannot extract direct image/video URLs.
+    """
+
+    entry_link = entry.get("link", "").lower()
+    title = entry.get("title", "").lower()
+    summary = entry.get("summary", "").lower()
+    description = entry.get("description", "").lower()
+
+    combined_text = f"{entry_link} {title} {summary} {description}"
+
+    if "/gallery/" in combined_text:
+        return True, "possible_gallery"
+
+    if "gallery" in combined_text or "carousel" in combined_text:
+        return True, "possible_gallery"
+
+    if "preview.redd.it" in combined_text:
+        return True, "reddit_preview"
+
+    if "i.redd.it" in combined_text:
+        return True, "reddit_image"
+
+    if "v.redd.it" in combined_text:
+        return True, "reddit_video"
+
+    if "<img" in combined_text:
+        return True, "rss_image_present"
+
+    return False, "no_media_detected"
 
 def fetch_latest_posts(
     subreddit_name: str,
@@ -202,6 +303,8 @@ def fetch_latest_posts(
     for entry in entries:
         media = extract_media_urls(entry)
 
+        has_media_candidate, media_hint = detect_media_candidate(entry)
+
         posts.append(
             {
                 "id": entry.id,
@@ -209,6 +312,8 @@ def fetch_latest_posts(
                 "url": entry.link,
                 "image_urls": media["image_urls"],
                 "video_urls": media["video_urls"],
+                "has_media_candidate": has_media_candidate,
+                "media_hint": media_hint,
                 "subreddit": subreddit_name,
                 "feed_mode": feed_mode,
             }
