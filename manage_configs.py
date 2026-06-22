@@ -8,7 +8,14 @@ def list_configs():
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, subreddit_name, discord_channel_id, is_active, created_at
+                SELECT
+                    id,
+                    subreddit_name,
+                    discord_channel_id,
+                    is_active,
+                    COALESCE(feed_modes, 'old,hot,new') AS feed_modes,
+                    COALESCE(post_limit, 25) AS post_limit,
+                    created_at
                 FROM subreddit_configs
                 ORDER BY id ASC;
                 """
@@ -23,18 +30,33 @@ def list_configs():
     print("-" * 90)
 
     for row in rows:
-        config_id, subreddit_name, channel_id, is_active, created_at = row
+        (
+            config_id,
+            subreddit_name,
+            channel_id,
+            is_active,
+            feed_modes,
+            post_limit,
+            created_at,
+        ) = row
+
         status = "ACTIVE" if is_active else "INACTIVE"
 
         print(f"ID: {config_id}")
         print(f"Subreddit: r/{subreddit_name}")
         print(f"Discord Channel ID: {channel_id}")
         print(f"Status: {status}")
+        print(f"Feed modes: {feed_modes}")
+        print(f"Post limit: {post_limit}")
         print(f"Created at: {created_at}")
         print("-" * 90)
 
-
-def add_config(subreddit_name: str, discord_channel_id: str):
+def add_config(
+    subreddit_name: str,
+    discord_channel_id: str,
+    feed_modes: str = "old,hot,new",
+    post_limit: int = 25,
+):
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -42,17 +64,24 @@ def add_config(subreddit_name: str, discord_channel_id: str):
                 INSERT INTO subreddit_configs (
                     subreddit_name,
                     discord_channel_id,
-                    is_active
+                    is_active,
+                    feed_modes,
+                    post_limit
                 )
-                VALUES (%s, %s, TRUE)
+                VALUES (%s, %s, TRUE, %s, %s)
                 ON CONFLICT (subreddit_name, discord_channel_id)
-                DO UPDATE SET is_active = TRUE;
+                DO UPDATE SET
+                    is_active = TRUE,
+                    feed_modes = EXCLUDED.feed_modes,
+                    post_limit = EXCLUDED.post_limit;
                 """,
-                (subreddit_name, discord_channel_id),
+                (subreddit_name, discord_channel_id, feed_modes, post_limit),
             )
 
-    print(f"Added/activated r/{subreddit_name} -> channel {discord_channel_id}")
-
+    print(
+        f"Added/activated r/{subreddit_name} -> channel {discord_channel_id} "
+        f"with modes={feed_modes}, post_limit={post_limit}"
+    )
 
 def remove_config(subreddit_name: str):
     with get_connection() as conn:
@@ -134,6 +163,17 @@ def main():
     add_parser = subparsers.add_parser("add", help="Add a subreddit config")
     add_parser.add_argument("subreddit_name")
     add_parser.add_argument("discord_channel_id")
+    add_parser.add_argument(
+        "--modes",
+        default="old,hot,new",
+        help="Comma-separated feed modes, e.g. old,hot,new or hot,new",
+    )
+    add_parser.add_argument(
+        "--limit",
+        type=int,
+        default=25,
+        help="Number of candidate posts to check per cycle",
+    )
 
     remove_parser = subparsers.add_parser("remove", help="Remove a subreddit config")
     remove_parser.add_argument("subreddit_name")
@@ -162,7 +202,12 @@ def main():
         list_configs()
 
     elif args.command == "add":
-        add_config(args.subreddit_name, args.discord_channel_id)
+        add_config(
+            subreddit_name=args.subreddit_name,
+            discord_channel_id=args.discord_channel_id,
+            feed_modes=args.modes,
+            post_limit=args.limit,
+            )
 
     elif args.command == "remove":
         remove_config(args.subreddit_name)
