@@ -96,7 +96,7 @@ def mark_as_posted(
 
     print(f"Marked post as posted: {post_id}")
 
-    
+
 def add_subreddit_config(subreddit_name: str, discord_channel_id: str) -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
@@ -188,3 +188,94 @@ def mark_as_skipped(
             )
 
     print(f"Marked post as skipped: {post_id} | Reason: {reason}")
+
+def list_subreddit_configs():
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    subreddit_name,
+                    discord_channel_id,
+                    is_active,
+                    COALESCE(feed_modes, 'old,hot,new') AS feed_modes,
+                    COALESCE(post_limit, 25) AS post_limit,
+                    created_at
+                FROM subreddit_configs
+                ORDER BY id ASC;
+                """
+            )
+
+            return cursor.fetchall()
+
+
+def upsert_subreddit_config(
+    subreddit_name: str,
+    discord_channel_id: str,
+    feed_modes: str = "old,hot,new",
+    post_limit: int = 25,
+):
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO subreddit_configs (
+                    subreddit_name,
+                    discord_channel_id,
+                    is_active,
+                    feed_modes,
+                    post_limit
+                )
+                VALUES (%s, %s, TRUE, %s, %s)
+                ON CONFLICT (subreddit_name, discord_channel_id)
+                DO UPDATE SET
+                    is_active = TRUE,
+                    feed_modes = EXCLUDED.feed_modes,
+                    post_limit = EXCLUDED.post_limit;
+                """,
+                (subreddit_name, discord_channel_id, feed_modes, post_limit),
+            )
+
+
+def remove_subreddit_config(subreddit_name: str):
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM subreddit_configs
+                WHERE LOWER(subreddit_name) = LOWER(%s);
+                """,
+                (subreddit_name,),
+            )
+
+            return cursor.rowcount
+
+
+def set_subreddit_active(subreddit_name: str, is_active: bool):
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE subreddit_configs
+                SET is_active = %s
+                WHERE LOWER(subreddit_name) = LOWER(%s);
+                """,
+                (is_active, subreddit_name),
+            )
+
+            return cursor.rowcount
+
+
+def clear_processed_posts_for_subreddit(subreddit_name: str):
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM posted_posts
+                WHERE LOWER(subreddit_name) = LOWER(%s);
+                """,
+                (subreddit_name,),
+            )
+
+            return cursor.rowcount

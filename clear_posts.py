@@ -19,3 +19,4 @@ def clear_posts_for_subreddit(subreddit_name: str):
 
 if __name__ == "__main__":
     clear_posts_for_subreddit("wallpapers")
+
