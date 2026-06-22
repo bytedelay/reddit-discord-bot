@@ -143,15 +143,22 @@ async def check_reddit_posts():
 
     jobs = []
 
-    for subreddit_name, discord_channel_id in configs:
-        for feed_mode in FEED_MODES:
-            jobs.append(
-                {
-                    "subreddit_name": subreddit_name,
-                    "discord_channel_id": discord_channel_id,
-                    "feed_mode": feed_mode,
-                }
-            )
+    for subreddit_name, discord_channel_id, feed_modes_text, config_post_limit in configs:
+    feed_modes = [
+        mode.strip().lower()
+        for mode in feed_modes_text.split(",")
+        if mode.strip()
+    ]
+
+    for feed_mode in feed_modes:
+        jobs.append(
+            {
+                "subreddit_name": subreddit_name,
+                "discord_channel_id": discord_channel_id,
+                "feed_mode": feed_mode,
+                "post_limit": config_post_limit,
+            }
+        )
 
     if not jobs:
         print("No jobs available.")
@@ -167,6 +174,7 @@ async def check_reddit_posts():
         subreddit_name = job["subreddit_name"]
         discord_channel_id = job["discord_channel_id"]
         feed_mode = job["feed_mode"]
+        job_post_limit = job["post_limit"]
 
         print(
             f"Trying r/{subreddit_name} [{feed_mode}] "
@@ -184,7 +192,7 @@ async def check_reddit_posts():
             posts = fetch_latest_posts(
                 subreddit_name=subreddit_name,
                 feed_mode=feed_mode,
-                limit=POST_LIMIT,
+                limit=job_post_limit,
             )
 
             if not posts:
