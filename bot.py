@@ -144,11 +144,11 @@ async def check_reddit_posts():
     jobs = []
 
     for subreddit_name, discord_channel_id, feed_modes_text, config_post_limit in configs:
-    feed_modes = [
-        mode.strip().lower()
-        for mode in feed_modes_text.split(",")
-        if mode.strip()
-    ]
+        feed_modes = [
+            mode.strip().lower()
+            for mode in feed_modes_text.split(",")
+                if mode.strip()
+        ]
 
     for feed_mode in feed_modes:
         jobs.append(
