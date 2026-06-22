@@ -107,7 +107,11 @@ def get_active_subreddit_configs():
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT subreddit_name, discord_channel_id
+                SELECT
+                    subreddit_name,
+                    discord_channel_id,
+                    COALESCE(feed_modes, 'old,hot,new') AS feed_modes,
+                    COALESCE(post_limit, 25) AS post_limit
                 FROM subreddit_configs
                 WHERE is_active = TRUE
                 ORDER BY id ASC;
