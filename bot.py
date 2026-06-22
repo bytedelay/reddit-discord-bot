@@ -150,15 +150,15 @@ async def check_reddit_posts():
                 if mode.strip()
         ]
 
-    for feed_mode in feed_modes:
-        jobs.append(
-            {
-                "subreddit_name": subreddit_name,
-                "discord_channel_id": discord_channel_id,
-                "feed_mode": feed_mode,
-                "post_limit": config_post_limit,
-            }
-        )
+        for feed_mode in feed_modes:
+            jobs.append(
+                {
+                    "subreddit_name": subreddit_name,
+                    "discord_channel_id": discord_channel_id,
+                    "feed_mode": feed_mode,
+                    "post_limit": config_post_limit,
+                }
+            )
 
     if not jobs:
         print("No jobs available.")
