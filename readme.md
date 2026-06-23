@@ -11,14 +11,15 @@
 
 ### Completed
 
-- [X] Prepared a database to collect the data
-- [X] Linked the postgres database
+- [X] Prepared a database to collect the data.
+- [X] Linked the postgres database.
 - [X] Checked Connection and sort out issues.
-- [X] Checked reddit posts retrieval 
-- [X] Added readme.md
-- [X] Integrate Discord bot with the current version
-- [X] Switch from RSS to official API
-- [X] Test offline performance
+- [X] Checked reddit posts retrieval.
+- [X] Added readme.md.
+- [X] Integrate Discord bot with the current version.
+- [X] Integrated RSS instead of reddit API till approval.
+- [X] Tested offline performance.
+- [X] Provided options to segregate various forms of media.
 
 ### InProgress
 
@@ -27,10 +28,12 @@
 ### Future Plan
 
 
-- [ ] Provide options to collect various format of media
 - [ ] Docker Integration
 - [ ] Test portability
-- [ ] Remove test files
+- [ ] Remove test files 
+- [ ] Enable bot to be used in multiple servers than a single one.
+- [ ] Upload the working gif.
+- [ ] Integrate AI Bot Feature and expand into other discord features.
 - [ ] Make readme.md fancier. ;_;
 
 
