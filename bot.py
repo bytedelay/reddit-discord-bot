@@ -24,7 +24,7 @@ from reddit_fetcher import fetch_latest_posts
 load_dotenv(override=True)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
+#DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 
 POST_LIMIT = int(os.getenv("POST_LIMIT", 25))
 CHECK_INTERVAL_MINUTES = int(os.getenv("CHECK_INTERVAL_MINUTES", 5))
@@ -42,6 +42,29 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 slash_commands_synced = False
 
+async def sync_slash_commands_to_all_guilds():
+    total_synced = 0
+
+    if not client.guilds:
+        print("Bot is not in any guilds yet. No slash commands synced.")
+        return
+
+    for guild in client.guilds:
+        guild_object = discord.Object(id=guild.id)
+
+        tree.copy_global_to(guild=guild_object)
+        synced = await tree.sync(guild=guild_object)
+
+        total_synced += len(synced)
+
+        print(
+            f"Synced {len(synced)} slash commands "
+            f"to guild {guild.name} ({guild.id})."
+        )
+
+    print(f"Total slash command sync count: {total_synced}")
+
+@client.event
 @client.event
 async def on_ready():
     global slash_commands_synced
@@ -51,15 +74,7 @@ async def on_ready():
     init_db()
 
     if not slash_commands_synced:
-        if DISCORD_GUILD_ID:
-            guild = discord.Object(id=int(DISCORD_GUILD_ID))
-            tree.copy_global_to(guild=guild)
-            synced = await tree.sync(guild=guild)
-            print(f"Synced {len(synced)} slash commands to guild {DISCORD_GUILD_ID}.")
-        else:
-            synced = await tree.sync()
-            print(f"Synced {len(synced)} global slash commands.")
-
+        await sync_slash_commands_to_all_guilds()
         slash_commands_synced = True
 
     print(f"Feed modes: {FEED_MODES}")
@@ -68,6 +83,7 @@ async def on_ready():
 
     if not check_reddit_posts.is_running():
         check_reddit_posts.start()
+
 
 async def send_reddit_post_to_discord(channel, post: dict):
     post_id = post["id"]
@@ -185,7 +201,7 @@ async def check_reddit_posts():
 
     jobs = []
 
-    for subreddit_name, discord_channel_id, feed_modes_text, config_post_limit in configs:
+    for (subreddit_name,discord_channel_id,feed_modes_text,config_post_limit,discord_guild_id,) in configs:
         feed_modes = [
             mode.strip().lower()
             for mode in feed_modes_text.split(",")
@@ -197,6 +213,7 @@ async def check_reddit_posts():
                 {
                     "subreddit_name": subreddit_name,
                     "discord_channel_id": discord_channel_id,
+                    "discord_guild_id": discord_guild_id,
                     "feed_mode": feed_mode,
                     "post_limit": config_post_limit,
                 }
@@ -215,12 +232,13 @@ async def check_reddit_posts():
 
         subreddit_name = job["subreddit_name"]
         discord_channel_id = job["discord_channel_id"]
+        discord_guild_id = job["discord_guild_id"]
         feed_mode = job["feed_mode"]
         job_post_limit = job["post_limit"]
 
         print(
             f"Trying r/{subreddit_name} [{feed_mode}] "
-            f"for channel {discord_channel_id}..."
+            f"for guild {discord_guild_id}, channel {discord_channel_id}..."
         )
 
         try:
@@ -250,7 +268,7 @@ async def check_reddit_posts():
                 image_urls = post.get("image_urls", [])
                 video_urls = post.get("video_urls", [])
 
-                if has_been_processed(post_id):
+                if has_been_processed(post_id, discord_channel_id):
                     print(f"Already processed, skipping: {title}")
                     continue
                 has_media_candidate = post.get("has_media_candidate", False)
@@ -284,6 +302,7 @@ async def check_reddit_posts():
                     title=title,
                     reddit_url=url,
                     subreddit_name=subreddit,
+                    discord_channel_id=discord_channel_id,
                 )
 
                 print(f"Posted to Discord: {title}")
@@ -311,6 +330,10 @@ ALLOWED_FEED_MODES = {"old", "hot", "new", "top", "rising"}
 
 
 def user_can_manage_bot(interaction: discord.Interaction) -> bool:
+    """
+    Only allow server admins or users with Manage Server permission
+    to control DRBOT.
+    """
     if not interaction.guild:
         return False
 
@@ -320,6 +343,12 @@ def user_can_manage_bot(interaction: discord.Interaction) -> bool:
 
 
 def validate_modes(modes: str) -> tuple[bool, str]:
+    """
+    Validate comma-separated feed modes like:
+    old,hot,new
+    hot,new
+    top,rising
+    """
     mode_list = [
         mode.strip().lower()
         for mode in modes.split(",")
@@ -344,9 +373,10 @@ def validate_modes(modes: str) -> tuple[bool, str]:
 
     return True, ",".join(mode_list)
 
+
 @tree.command(
     name="drbot_add",
-    description="Add or update a subreddit feed config.",
+    description="Add or update a subreddit feed config for this server.",
 )
 async def drbot_add(
     interaction: discord.Interaction,
@@ -358,6 +388,13 @@ async def drbot_add(
     if not user_can_manage_bot(interaction):
         await interaction.response.send_message(
             "You need Manage Server or Administrator permission to use this.",
+            ephemeral=True,
+        )
+        return
+
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
             ephemeral=True,
         )
         return
@@ -380,15 +417,28 @@ async def drbot_add(
 
     target_channel = channel or interaction.channel
 
+    if not isinstance(target_channel, discord.TextChannel):
+        await interaction.response.send_message(
+            "Please use this command in a text channel or provide a text channel.",
+            ephemeral=True,
+        )
+        return
+
+    discord_guild_id = str(interaction.guild_id)
+    discord_channel_id = str(target_channel.id)
+
     upsert_subreddit_config(
         subreddit_name=subreddit,
-        discord_channel_id=str(target_channel.id),
+        discord_channel_id=discord_channel_id,
+        discord_guild_id=discord_guild_id,
         feed_modes=normalized_modes_or_error,
         post_limit=limit,
     )
 
     await interaction.response.send_message(
         f"Added/updated `r/{subreddit}` → {target_channel.mention}\n"
+        f"Server ID: `{discord_guild_id}`\n"
+        f"Channel ID: `{discord_channel_id}`\n"
         f"Modes: `{normalized_modes_or_error}`\n"
         f"Limit: `{limit}`",
         ephemeral=True,
@@ -397,7 +447,7 @@ async def drbot_add(
 
 @tree.command(
     name="drbot_list",
-    description="List all subreddit feed configs.",
+    description="List subreddit feed configs for this server.",
 )
 async def drbot_list(interaction: discord.Interaction):
     if not user_can_manage_bot(interaction):
@@ -407,11 +457,20 @@ async def drbot_list(interaction: discord.Interaction):
         )
         return
 
-    configs = list_subreddit_configs()
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
+    discord_guild_id = str(interaction.guild_id)
+
+    configs = list_subreddit_configs(discord_guild_id)
 
     if not configs:
         await interaction.response.send_message(
-            "No subreddit configs found.",
+            "No subreddit configs found for this server.",
             ephemeral=True,
         )
         return
@@ -450,7 +509,7 @@ async def drbot_list(interaction: discord.Interaction):
 
 @tree.command(
     name="drbot_remove",
-    description="Remove a subreddit feed config.",
+    description="Remove a subreddit feed config from this server.",
 )
 async def drbot_remove(
     interaction: discord.Interaction,
@@ -463,17 +522,27 @@ async def drbot_remove(
         )
         return
 
-    deleted_count = remove_subreddit_config(subreddit)
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
+    deleted_count = remove_subreddit_config(
+        subreddit_name=subreddit,
+        discord_guild_id=str(interaction.guild_id),
+    )
 
     await interaction.response.send_message(
-        f"Removed `{deleted_count}` config(s) for `r/{subreddit}`.",
+        f"Removed `{deleted_count}` config(s) for `r/{subreddit}` from this server.",
         ephemeral=True,
     )
 
 
 @tree.command(
     name="drbot_pause",
-    description="Pause a subreddit feed without deleting it.",
+    description="Pause a subreddit feed in this server without deleting it.",
 )
 async def drbot_pause(
     interaction: discord.Interaction,
@@ -486,20 +555,28 @@ async def drbot_pause(
         )
         return
 
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
     updated_count = set_subreddit_active(
         subreddit_name=subreddit,
         is_active=False,
+        discord_guild_id=str(interaction.guild_id),
     )
 
     await interaction.response.send_message(
-        f"Paused `{updated_count}` config(s) for `r/{subreddit}`.",
+        f"Paused `{updated_count}` config(s) for `r/{subreddit}` in this server.",
         ephemeral=True,
     )
 
 
 @tree.command(
     name="drbot_resume",
-    description="Resume a paused subreddit feed.",
+    description="Resume a paused subreddit feed in this server.",
 )
 async def drbot_resume(
     interaction: discord.Interaction,
@@ -512,20 +589,28 @@ async def drbot_resume(
         )
         return
 
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
     updated_count = set_subreddit_active(
         subreddit_name=subreddit,
         is_active=True,
+        discord_guild_id=str(interaction.guild_id),
     )
 
     await interaction.response.send_message(
-        f"Resumed `{updated_count}` config(s) for `r/{subreddit}`.",
+        f"Resumed `{updated_count}` config(s) for `r/{subreddit}` in this server.",
         ephemeral=True,
     )
 
 
 @tree.command(
     name="drbot_clear",
-    description="Clear processed post history for a subreddit.",
+    description="Clear processed post history for a subreddit in this server.",
 )
 async def drbot_clear(
     interaction: discord.Interaction,
@@ -538,10 +623,20 @@ async def drbot_clear(
         )
         return
 
-    deleted_count = clear_processed_posts_for_subreddit(subreddit)
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
+    deleted_count = clear_processed_posts_for_subreddit(
+        subreddit_name=subreddit,
+        discord_guild_id=str(interaction.guild_id),
+    )
 
     await interaction.response.send_message(
-        f"Cleared `{deleted_count}` processed post(s) for `r/{subreddit}`.",
+        f"Cleared `{deleted_count}` processed post(s) for `r/{subreddit}` in this server.",
         ephemeral=True,
     )
 
@@ -564,6 +659,13 @@ async def drbot_fetch(
         )
         return
 
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
     mode = mode.strip().lower()
 
     if mode not in ALLOWED_FEED_MODES:
@@ -580,9 +682,18 @@ async def drbot_fetch(
         )
         return
 
+    target_channel = channel or interaction.channel
+
+    if not isinstance(target_channel, discord.TextChannel):
+        await interaction.response.send_message(
+            "Please use this command in a text channel or provide a text channel.",
+            ephemeral=True,
+        )
+        return
+
     await interaction.response.defer(ephemeral=True)
 
-    target_channel = channel or interaction.channel
+    target_channel_id = str(target_channel.id)
 
     posts = fetch_latest_posts(
         subreddit_name=subreddit,
@@ -601,11 +712,12 @@ async def drbot_fetch(
         post_id = post["id"]
         title = post["title"]
         url = post["url"]
+
         image_urls = post.get("image_urls", [])
         video_urls = post.get("video_urls", [])
         has_media_candidate = post.get("has_media_candidate", False)
 
-        if has_been_processed(post_id):
+        if has_been_processed(post_id, target_channel_id):
             continue
 
         if not image_urls and not video_urls and not has_media_candidate:
@@ -621,10 +733,12 @@ async def drbot_fetch(
             title=title,
             reddit_url=url,
             subreddit_name=subreddit,
+            discord_channel_id=target_channel_id,
         )
 
         await interaction.followup.send(
-            f"Posted one item from `r/{subreddit}` using `{mode}` to {target_channel.mention}.",
+            f"Posted one item from `r/{subreddit}` using `{mode}` "
+            f"to {target_channel.mention}.",
             ephemeral=True,
         )
         return
