@@ -20,6 +20,9 @@
 - [X] Integrated RSS instead of reddit API till approval.
 - [X] Tested offline performance.
 - [X] Provided options to segregate various forms of media.
+- [X] Enable bot to be used in multiple servers than a single one.
+- [X] Docker Integration [Completed via separate repo]
+- [X] Test portability [Docker works in system]
 
 ### InProgress
 
@@ -27,12 +30,9 @@
 
 ### Future Plan
 
-
-- [ ] Docker Integration
-- [ ] Test portability
 - [ ] Remove test files 
-- [ ] Enable bot to be used in multiple servers than a single one.
 - [ ] Upload the working gif.
+- [ ] Optimize the current version. 
 - [ ] Integrate AI Bot Feature and expand into other discord features.
 - [ ] Make readme.md fancier. ;_;
 
