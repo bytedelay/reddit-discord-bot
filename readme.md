@@ -26,7 +26,8 @@
 - [X] Removed Hyperlinks from images, also ensuring image fetching without titles.
 - [X] Fetching carousel links made optional as rss do not include proper carousel integration.
 
-[!CAUTION] Reddit API request denied. 
+>[!CAUTION] 
+>Reddit API request denied.
 
 ### Future Plan
 
