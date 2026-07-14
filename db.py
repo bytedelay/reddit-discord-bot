@@ -43,6 +43,14 @@ def init_db() -> None:
                 """
             )
 
+            cursor.execute(
+                """
+                ALTER TABLE subreddit_configs
+                ADD COLUMN IF NOT EXISTS include_carousels
+                BOOLEAN NOT NULL DEFAULT FALSE;
+                """
+            )
+
     print("Database initialized successfully.")
 
 
@@ -130,7 +138,8 @@ def get_active_subreddit_configs():
                     discord_channel_id,
                     COALESCE(feed_modes, 'old,hot,new') AS feed_modes,
                     COALESCE(post_limit, 25) AS post_limit,
-                    discord_guild_id
+                    discord_guild_id,
+                    COALESCE(include_carousels, FALSE) AS include_carousels
                 FROM subreddit_configs
                 WHERE is_active = TRUE
                 ORDER BY id ASC;
@@ -218,6 +227,7 @@ def list_subreddit_configs(discord_guild_id: str | None = None):
                         is_active,
                         COALESCE(feed_modes, 'old,hot,new') AS feed_modes,
                         COALESCE(post_limit, 25) AS post_limit,
+                        COALESCE(include_carousels, FALSE) AS include_carousels,
                         created_at
                     FROM subreddit_configs
                     WHERE discord_guild_id = %s
@@ -235,14 +245,14 @@ def list_subreddit_configs(discord_guild_id: str | None = None):
                         is_active,
                         COALESCE(feed_modes, 'old,hot,new') AS feed_modes,
                         COALESCE(post_limit, 25) AS post_limit,
+                        COALESCE(include_carousels, FALSE) AS include_carousels,
                         created_at
                     FROM subreddit_configs
                     ORDER BY id ASC;
                     """
                 )
-
             return cursor.fetchall()
-
+        
 def upsert_subreddit_config(
     subreddit_name: str,
     discord_channel_id: str,
@@ -362,6 +372,45 @@ def clear_processed_posts_for_subreddit(
                     WHERE LOWER(subreddit_name) = LOWER(%s);
                     """,
                     (subreddit_name,),
+                )
+
+            return cursor.rowcount
+        
+def set_subreddit_carousels(
+    subreddit_name: str,
+    include_carousels: bool,
+    discord_guild_id: str | None = None,
+) -> int:
+    """
+    Enable or disable carousel/gallery posts for a subreddit config.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            if discord_guild_id:
+                cursor.execute(
+                    """
+                    UPDATE subreddit_configs
+                    SET include_carousels = %s
+                    WHERE LOWER(subreddit_name) = LOWER(%s)
+                    AND discord_guild_id = %s;
+                    """,
+                    (
+                        include_carousels,
+                        subreddit_name,
+                        discord_guild_id,
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE subreddit_configs
+                    SET include_carousels = %s
+                    WHERE LOWER(subreddit_name) = LOWER(%s);
+                    """,
+                    (
+                        include_carousels,
+                        subreddit_name,
+                    ),
                 )
 
             return cursor.rowcount

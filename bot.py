@@ -1,4 +1,10 @@
+import asyncio
+import io
+import mimetypes
 import os
+from urllib.parse import urlparse
+
+import requests
 from typing import Optional
 
 import discord
@@ -10,13 +16,14 @@ from db import (
     init_db,
     has_been_processed,
     mark_as_posted,
-    mark_as_skipped,
+    #mark_as_skipped,
     get_active_subreddit_configs,
     list_subreddit_configs,
     upsert_subreddit_config,
     remove_subreddit_config,
     set_subreddit_active,
     clear_processed_posts_for_subreddit,
+    set_subreddit_carousels,
 )
 from reddit_fetcher import fetch_latest_posts
 
@@ -83,109 +90,254 @@ async def on_ready():
 
     if not check_reddit_posts.is_running():
         check_reddit_posts.start()
+    
 
 
-async def send_reddit_post_to_discord(channel, post: dict):
-    post_id = post["id"]
-    title = post["title"]
-    url = post["url"]
-    subreddit = post["subreddit"]
-    source_mode = post["feed_mode"]
 
+def is_carousel_post(post: dict) -> bool:
+    """
+    Treat a post as a carousel when:
+
+    1. Reddit exposed more than one image, or
+    2. The existing media detector flagged it as a possible gallery.
+    """
+    image_urls = post.get("image_urls", [])
+    media_hint = post.get("media_hint", "")
+
+    return (
+        len(image_urls) > 1
+        or media_hint == "possible_gallery"
+    )
+
+
+DIRECT_VIDEO_EXTENSIONS = {
+        ".mp4",
+        ".webm",
+        ".mov",
+    }
+
+def is_redgifs_watch_url(url: str) -> bool:
+    parsed_url = urlparse(url)
+
+    return (
+        parsed_url.netloc.lower()
+        in {"redgifs.com", "www.redgifs.com"}
+        and parsed_url.path.lower().startswith("/watch/")
+    )
+
+def normalize_redgifs_embed_url(url: str) -> str | None:
+    """
+    Accept both RedGIFs URL formats:
+
+    https://www.redgifs.com/watch/example
+    https://www.redgifs.com/ifr/example
+
+    Returns a normalized /watch/ URL that Discord can preview.
+    """
+    parsed_url = urlparse(url)
+
+    if parsed_url.netloc.lower() not in {
+        "redgifs.com",
+        "www.redgifs.com",
+    }:
+        return None
+
+    path_parts = [
+        part
+        for part in parsed_url.path.split("/")
+        if part
+    ]
+
+    if len(path_parts) < 2:
+        return None
+
+    url_type = path_parts[0].lower()
+    media_id = path_parts[1]
+
+    if url_type not in {"watch", "ifr"}:
+        return None
+
+    if not media_id:
+        return None
+
+    return f"https://www.redgifs.com/watch/{media_id}"
+
+def download_direct_video(video_url: str):
+    """
+    Download a direct video URL into memory.
+
+    Returns:
+        tuple[bytes, str] when successful
+        None when the URL is not a downloadable video or is too large
+    """
+    headers = {
+        "User-Agent": "DRBOT/0.1 contact: local-development"
+    }
+
+    try:
+        with requests.get(
+            video_url,
+            headers=headers,
+            stream=True,
+            timeout=30,
+            allow_redirects=True,
+        ) as response:
+            response.raise_for_status()
+
+            content_type = (
+                response.headers
+                .get("Content-Type", "")
+                .split(";")[0]
+                .strip()
+                .lower()
+            )
+
+            final_url = response.url
+            path = urlparse(final_url).path
+            extension = os.path.splitext(path)[1].lower()
+
+            is_video_content = content_type.startswith("video/")
+            has_video_extension = extension in DIRECT_VIDEO_EXTENSIONS
+
+            # Some video hosts return an HTML webpage instead of a video file.
+            if not is_video_content and not has_video_extension:
+                print(
+                    f"Skipping non-direct video URL: {video_url} "
+                    f"(Content-Type: {content_type or 'unknown'})"
+                )
+                return None
+
+            content_length = response.headers.get("Content-Length")
+
+            if content_length and content_length.isdigit():
+                if int(content_length) > MAX_MEDIA_UPLOAD_BYTES:
+                    print(
+                        f"Skipping oversized video: {video_url} "
+                        f"({content_length} bytes)"
+                    )
+                    return None
+
+            data = bytearray()
+
+            for chunk in response.iter_content(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+
+                data.extend(chunk)
+
+                if len(data) > MAX_MEDIA_UPLOAD_BYTES:
+                    print(
+                        f"Skipping oversized video while downloading: "
+                        f"{video_url}"
+                    )
+                    return None
+
+            if not data:
+                print(f"Downloaded video was empty: {video_url}")
+                return None
+
+            if extension not in DIRECT_VIDEO_EXTENSIONS:
+                guessed_extension = mimetypes.guess_extension(content_type)
+                extension = guessed_extension or ".mp4"
+
+            filename = f"reddit_video{extension}"
+
+            return bytes(data), filename
+
+    except requests.RequestException as error:
+        print(f"Failed to download video {video_url}: {error}")
+        return None
+
+
+async def send_video_as_attachment(
+    channel,
+    video_url: str,
+) -> bool:
+    """
+    RedGIFs pages are sent directly so Discord creates its native preview.
+
+    Direct video files such as .mp4 and .webm continue through the existing
+    download-and-upload function.
+    """
+    redgifs_embed_url = normalize_redgifs_embed_url(video_url)
+
+    if redgifs_embed_url:
+        try:
+            await channel.send(redgifs_embed_url)
+            return True
+
+        except discord.HTTPException as error:
+            print(
+                f"Failed to send RedGIFs preview "
+                f"{redgifs_embed_url}: {error}"
+            )
+            return False
+
+    result = await asyncio.to_thread(
+        download_direct_video,
+        video_url,
+    )
+
+    if result is None:
+        return False
+
+    video_bytes, filename = result
+
+    video_file = discord.File(
+        fp=io.BytesIO(video_bytes),
+        filename=filename,
+    )
+
+    await channel.send(file=video_file)
+
+    return True
+
+
+async def send_reddit_post_to_discord(
+    channel,
+    post: dict,
+) -> bool:
+    """
+    Send only the actual media.
+
+    Images:
+        Blank embeds containing only the image.
+
+    Videos:
+        Uploaded as attachments with no text.
+
+    Returns True when at least one media item was sent.
+    """
     image_urls = post.get("image_urls", [])
     video_urls = post.get("video_urls", [])
 
-    # Discord allows up to 10 embeds in one message.
-    # So we send up to 10 images from a Reddit gallery/post.
-    if image_urls:
-        embeds = []
+    media_sent = False
 
-        for index, image_url in enumerate(image_urls[:10], start=1):
-            embed = discord.Embed(
-                title=title if index == 1 else f"{title} — image {index}",
-                url=url,
-                description=f"New post from r/{subreddit}",
-            )
-
-            embed.add_field(
-                name="Subreddit",
-                value=f"r/{subreddit}",
-                inline=True,
-            )
-
-            embed.add_field(
-                name="Mode",
-                value=source_mode,
-                inline=True,
-            )
-
-            embed.add_field(
-                name="Image",
-                value=f"{index}/{len(image_urls)}",
-                inline=True,
-            )
-
+    for image_url in image_urls:
+        try:
+            embed = discord.Embed()
             embed.set_image(url=image_url)
-            embeds.append(embed)
 
-        await channel.send(embeds=embeds)
+            await channel.send(embed=embed)
+            media_sent = True
 
-    else:
-        media_hint = post.get("media_hint", "unknown")
-        has_media_candidate = post.get("has_media_candidate", False)
+        except discord.HTTPException as error:
+            print(f"Failed to send image embed {image_url}: {error}")
 
-        if has_media_candidate:
-            description = (
-                f"New post from r/{subreddit}\n\n"
-                f"Media detected, but RSS did not expose direct image URLs.\n"
-                f"Open the Reddit post to view the full carousel/gallery."
-            )
-        else:
-            description = f"New post from r/{subreddit}"
-
-        embed = discord.Embed(
-            title=title,
-            url=url,
-            description=description,
-        )
-
-        embed.add_field(
-            name="Subreddit",
-            value=f"r/{subreddit}",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Mode",
-            value=source_mode,
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Media Hint",
-            value=media_hint,
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Post ID",
-            value=post_id,
-            inline=True,
-        )
-
-        await channel.send(embed=embed)
-
-
-    # Send direct video links separately if the RSS extractor found any.
-    # Discord usually previews direct .mp4/.webm/.gif links better as normal messages.
-    if video_urls:
-        for video_url in video_urls[:3]:
-            await channel.send(
-                f"Video from **r/{subreddit}**:\n"
-                f"{video_url}\n"
-                f"Original post: {url}"
+    for video_url in video_urls:
+        try:
+            video_was_sent = await send_video_as_attachment(
+                channel=channel,
+                video_url=video_url,
             )
 
+            if video_was_sent:
+                media_sent = True
+
+        except discord.HTTPException as error:
+            print(f"Failed to upload video {video_url}: {error}")
+
+    return media_sent
 
 @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
 async def check_reddit_posts():
@@ -201,7 +353,7 @@ async def check_reddit_posts():
 
     jobs = []
 
-    for (subreddit_name,discord_channel_id,feed_modes_text,config_post_limit,discord_guild_id,) in configs:
+    for (subreddit_name,discord_channel_id,feed_modes_text,config_post_limit, discord_guild_id, include_carousels) in configs:
         feed_modes = [
             mode.strip().lower()
             for mode in feed_modes_text.split(",")
@@ -216,6 +368,7 @@ async def check_reddit_posts():
                     "discord_guild_id": discord_guild_id,
                     "feed_mode": feed_mode,
                     "post_limit": config_post_limit,
+                    "include_carousels": include_carousels,
                 }
             )
 
@@ -231,6 +384,7 @@ async def check_reddit_posts():
         job = jobs[job_index]
 
         subreddit_name = job["subreddit_name"]
+        include_carousels = job["include_carousels"]
         discord_channel_id = job["discord_channel_id"]
         discord_guild_id = job["discord_guild_id"]
         feed_mode = job["feed_mode"]
@@ -271,11 +425,21 @@ async def check_reddit_posts():
                 if has_been_processed(post_id, discord_channel_id):
                     print(f"Already processed, skipping: {title}")
                     continue
-                has_media_candidate = post.get("has_media_candidate", False)
-                media_hint = post.get("media_hint", "unknown")
+                carousel_post = is_carousel_post(post)
 
-                if not image_urls and not video_urls and not has_media_candidate:
-                    print(f"No media found, soft skipping: {title}")
+                if carousel_post and not include_carousels:
+                    print(
+                        f"Carousel disabled for r/{subreddit_name}, "
+                        f"skipping: {title}"
+                    )
+                    continue
+
+                # The user requested media only.
+                # A detected gallery without direct URLs cannot be posted.
+                if not image_urls and not video_urls:
+                    print(
+                        f"No usable direct media URLs, skipping: {title}"
+                    )
                     continue
                 
                 '''
@@ -292,10 +456,17 @@ async def check_reddit_posts():
 
                     continue
                 '''
-                await send_reddit_post_to_discord(
+                media_was_sent = await send_reddit_post_to_discord(
                     channel=channel,
                     post=post,
                 )
+
+                if not media_was_sent:
+                    print(
+                        f"Media could not be rendered or uploaded, "
+                        f"skipping without marking as posted: {title}"
+                    )
+                    continue
 
                 mark_as_posted(
                     post_id=post_id,
@@ -485,15 +656,18 @@ async def drbot_list(interaction: discord.Interaction):
             is_active,
             feed_modes,
             post_limit,
+            include_carousels,
             created_at,
         ) = row
 
         status = "ACTIVE" if is_active else "INACTIVE"
+        carousel_status = "ON" if include_carousels else "OFF"
 
         lines.append(
             f"`{config_id}` | r/{subreddit_name} | "
             f"<#{discord_channel_id}> | {status} | "
             f"modes=`{feed_modes}` | limit=`{post_limit}`"
+            f"carousels=`{carousel_status}`"
         )
 
     message = "\n".join(lines)
@@ -640,6 +814,53 @@ async def drbot_clear(
         ephemeral=True,
     )
 
+@tree.command(
+    name="drbot_carousels",
+    description="Enable or disable carousel posts for a subreddit feed.",
+)
+@app_commands.describe(
+    subreddit="Subreddit config to update",
+    enabled="Whether carousel/gallery posts should be included",
+)
+async def drbot_carousels(
+    interaction: discord.Interaction,
+    subreddit: str,
+    enabled: bool,
+):
+    if not user_can_manage_bot(interaction):
+        await interaction.response.send_message(
+            "You need Manage Server or Administrator permission to use this.",
+            ephemeral=True,
+        )
+        return
+
+    if not interaction.guild_id:
+        await interaction.response.send_message(
+            "This command can only be used inside a Discord server.",
+            ephemeral=True,
+        )
+        return
+
+    updated_count = set_subreddit_carousels(
+        subreddit_name=subreddit,
+        include_carousels=enabled,
+        discord_guild_id=str(interaction.guild_id),
+    )
+
+    if updated_count == 0:
+        await interaction.response.send_message(
+            f"No saved config was found for `r/{subreddit}` in this server.",
+            ephemeral=True,
+        )
+        return
+
+    status = "enabled" if enabled else "disabled"
+
+    await interaction.response.send_message(
+        f"Carousel posts are now **{status}** for `r/{subreddit}`.",
+        ephemeral=True,
+    )
+
 
 @tree.command(
     name="drbot_fetch",
@@ -650,6 +871,7 @@ async def drbot_fetch(
     subreddit: str,
     mode: str = "hot",
     limit: int = 25,
+    include_carousels: bool = False,
     channel: Optional[discord.TextChannel] = None,
 ):
     if not user_can_manage_bot(interaction):
@@ -715,18 +937,24 @@ async def drbot_fetch(
 
         image_urls = post.get("image_urls", [])
         video_urls = post.get("video_urls", [])
-        has_media_candidate = post.get("has_media_candidate", False)
-
         if has_been_processed(post_id, target_channel_id):
             continue
 
-        if not image_urls and not video_urls and not has_media_candidate:
+        carousel_post = is_carousel_post(post)
+
+        if carousel_post and not include_carousels:
             continue
 
-        await send_reddit_post_to_discord(
+        if not image_urls and not video_urls:
+            continue
+
+        media_was_sent = await send_reddit_post_to_discord(
             channel=target_channel,
             post=post,
         )
+
+        if not media_was_sent:
+            continue
 
         mark_as_posted(
             post_id=post_id,
