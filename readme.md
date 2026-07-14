@@ -23,10 +23,10 @@
 - [X] Enable bot to be used in multiple servers than a single one.
 - [X] Docker Integration [Completed via separate repo]
 - [X] Test portability [Docker works in system]
+- [X] Removed Hyperlinks from images, also ensuring image fetching without titles.
+- [X] Fetching carousel links made optional as rss do not include proper carousel integration.
 
-### InProgress
-
-- [ ] Waiting for official api approval for integration
+[!CAUTION] Reddit API request denied. 
 
 ### Future Plan
 
